@@ -10,6 +10,7 @@ from netifaces import interfaces, ifaddresses, AF_INET, AF_INET6
 from python_hosts import Hosts, HostsEntry
 
 __all__ = [
+    "HOSTNAME_REGEX",
     "normalize",
     "is_like_ipv4_address",
     "is_like_ipv6_address",
@@ -26,11 +27,11 @@ __all__ = [
 ]
 
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # src: https://stackoverflow.com/questions/106179/regular-expression-to-match-dns-hostname-or-ip-address
 # updated to inclue underscore, which is allowed on windows
-_HOSTNAME_REGEX = re.compile(
+HOSTNAME_REGEX = re.compile(
     "^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9_\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9_\-]*[A-Za-z0-9])$"
 )
 # this does not guarantee a valid ipv4 address. it just indicates that the user probably entered an address
@@ -86,7 +87,7 @@ def is_like_hostname(host: str) -> bool:
     if is_like_address(host):
         return False
     host = normalize(host)
-    if not _HOSTNAME_REGEX.match(host):
+    if not HOSTNAME_REGEX.match(host):
         return False
     return True
 
@@ -101,7 +102,7 @@ def is_like_host(host: str) -> bool:
     if is_like_address(host):
         return True
     host = normalize(host)
-    if _HOSTNAME_REGEX.match(host):
+    if HOSTNAME_REGEX.match(host):
         return True
     return False
 
@@ -116,7 +117,7 @@ def get_likely_type(host: str) -> str:
     if is_like_address(host):
         return "address"
     host = normalize(host)
-    if _HOSTNAME_REGEX.match(host):
+    if HOSTNAME_REGEX.match(host):
         return "hostname"
     raise ValueError(f"Host is not likely a IPv4/IPv6 address or hostname: {host}")
 
@@ -148,7 +149,7 @@ def is_valid_hostname(host: str) -> bool:
     if is_valid_address(host):
         return False
     host = normalize(host)
-    if not _HOSTNAME_REGEX.match(host):
+    if not HOSTNAME_REGEX.match(host):
         return False
     return True
 
@@ -164,7 +165,7 @@ def is_valid_host(host: str) -> bool:
     if is_valid_address(host):
         return True
     host = normalize(host)
-    if _HOSTNAME_REGEX.match(host):
+    if HOSTNAME_REGEX.match(host):
         return True
     return False
 
@@ -180,7 +181,7 @@ def get_valid_type(host: str) -> str:
     if is_valid_address(host):
         return "address"
     host = normalize(host)
-    if _HOSTNAME_REGEX.match(host):
+    if HOSTNAME_REGEX.match(host):
         return "hostname"
     raise ValueError(f"Host is not a valid IPv4/IPv6 address or hostname: {host}")
 
