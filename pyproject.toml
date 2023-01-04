@@ -1,43 +1,29 @@
 [build-system]
-requires = ["setuptools>=42"]
 build-backend = "setuptools.build_meta"
+requires = ["setuptools>=42"]
 
 [project]
-dynamic = ["version", "readme"]
-name = "jma-wireless-hostutil"
-description = "hostname/address parsers/validators/utils for handling user inputs which could be either."
 authors = [
-    {author = "Connor Sherwood Maynes", email = "connormaynes@gmail.com"}
-]
-maintainers = []
-keywords = [
-	"hostname",
-	"host",
-	"address",
-	"ip",
-	"networking",
-	"ipv4",
-	"ipv6",
+  {author = "Connor Sherwood Maynes", email = "connormaynes@gmail.com"},
 ]
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
-	"Topic :: System :: Networking",
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Topic :: System :: Networking",
 ]
-dependencies = [
-    "netifaces",
-	"python_hosts",
-	"opentelemetry-api",
-]
+dependencies = ["netifaces", "python_hosts", "opentelemetry-api"]
+description = "hostname/address parsers/validators/utils for handling user inputs which could be either."
+dynamic = ["version", "readme"]
+keywords = ["hostname", "host", "address", "ip", "networking", "ipv4", "ipv6"]
+maintainers = []
+name = "jma-wireless-hostutil"
 
 [tool.setuptools.dynamic]
-version = {attr = "jma_wireless.hostutil.__version__"}
 readme = {file = "README.md"}
+version = {attr = "jma_wireless.hostutil.__version__"}
 
 [project.optional-dependencies]
-dev = [
-    "black",
-]
+dev = ["black"]
 test = []
 
 [project.scripts]
