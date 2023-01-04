@@ -1,3 +1,44 @@
 [build-system]
 requires = ["setuptools>=42"]
 build-backend = "setuptools.build_meta"
+
+[project]
+dynamic = ["version", "readme", "description"]
+name = "jma-wireless-hostutil"
+authors = [
+    {author = "Connor Sherwood Maynes", email = "connormaynes@gmail.com"}
+]
+maintainers = []
+keywords = [
+	"hostname",
+	"host",
+	"address",
+	"ip",
+	"networking",
+	"ipv4",
+	"ipv6",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+	"Topic :: System :: Networking",
+]
+dependencies = [
+    "netifaces",
+	"python_hosts",
+	"opentelemetry-api",
+]
+
+[tool.setuptools.dynamic]
+description = {file = "jma_wireless.hostutil"}
+version = {attr = "jma_wireless.hostutil.__version__"}
+readme = {file = "README.md"}
+
+[project.optional-dependencies]
+dev = [
+    "black",
+]
+test = []
+
+[project.scripts]
+[project.gui-scripts]
