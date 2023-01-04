@@ -1,4 +1,3 @@
-"""hostname/address parsers/validators/utils for handling user inputs which could be either."""
 import ipaddress
 
 from typing import *

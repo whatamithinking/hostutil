@@ -3,8 +3,9 @@ requires = ["setuptools>=42"]
 build-backend = "setuptools.build_meta"
 
 [project]
-dynamic = ["version", "readme", "description"]
+dynamic = ["version", "readme"]
 name = "jma-wireless-hostutil"
+description = "hostname/address parsers/validators/utils for handling user inputs which could be either."
 authors = [
     {author = "Connor Sherwood Maynes", email = "connormaynes@gmail.com"}
 ]
@@ -30,7 +31,6 @@ dependencies = [
 ]
 
 [tool.setuptools.dynamic]
-description = {file = "jma_wireless.hostutil"}
 version = {attr = "jma_wireless.hostutil.__version__"}
 readme = {file = "README.md"}
 
