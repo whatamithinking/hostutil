@@ -1,12 +1,10 @@
 import ipaddress
 
-from typing import *
+from typing import Generator, Optional
 import socket
-from functools import cache
 import re
 
-from opentelemetry import trace
-from netifaces import interfaces, ifaddresses, AF_INET, AF_INET6
+from netifaces import interfaces, ifaddresses, AF_INET, AF_INET6, gateways
 from python_hosts import Hosts, HostsEntry
 
 __all__ = [
@@ -23,37 +21,25 @@ __all__ = [
     "is_valid_host",
     "get_valid_type",
     "get_hostname",
+    "get_netmask",
+    "get_address",
     "is_localhost",
 ]
 
 
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 
-# src: https://stackoverflow.com/questions/106179/regular-expression-to-match-dns-hostname-or-ip-address
+# src: https://stackoverflow.com/questions/106179/regular-expression-to-fullmatch-dns-hostname-or-ip-address
 # updated to inclue underscore, which is allowed on windows
 HOSTNAME_REGEX = re.compile(
-    "^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9_\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9_\-]*[A-Za-z0-9])$"
+    "(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9_\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9_\-]*[A-Za-z0-9])"
 )
 # this does not guarantee a valid ipv4 address. it just indicates that the user probably entered an address
 # but perhaps messed up the formatting
-_IPV4_ADDRESS_LIKE_REGEX = re.compile("^\d*\.\d*\.\d*\.\d*$")
+_IPV4_ADDRESS_LIKE_REGEX = re.compile("\d*\.\d*\.\d*\.\d*")
 # hostnames cannot contain ":" (src: https://en.wikipedia.org/wiki/Hostname#Restrictions_on_valid_host_names)
 # and ipv4 does not use this char either, so if included it likely means the user was trying to provide ipv6
 _IPV6_ADDRESS_LIKE_REGEX = re.compile(".*:.*")
-
-
-tracer = trace.get_tracer(__name__)
-
-
-def normalize(host: Optional[str]) -> Optional[str]:
-    """Normalize the given host so it can be compared against others to avoid
-    duplicates.
-
-    Simple operation, but defined here to avoid replicating all over the place.
-    """
-    if not host:
-        return
-    return host.strip().casefold()
 
 
 def is_like_ipv4_address(host: str) -> bool:
@@ -71,7 +57,6 @@ def is_like_ipv6_address(host: str) -> bool:
 def is_like_address(host: str) -> bool:
     """Return True if the given string looks like an address, even
     if it is not necessarily a valid one."""
-    host = normalize(host)
     if is_like_ipv4_address(host):
         return True
     if is_like_ipv6_address(host):
@@ -86,7 +71,6 @@ def is_like_hostname(host: str) -> bool:
     # to check that first to avoid calling address a hostname
     if is_like_address(host):
         return False
-    host = normalize(host)
     if not HOSTNAME_REGEX.match(host):
         return False
     return True
@@ -101,7 +85,6 @@ def is_like_host(host: str) -> bool:
     """
     if is_like_address(host):
         return True
-    host = normalize(host)
     if HOSTNAME_REGEX.match(host):
         return True
     return False
@@ -116,7 +99,6 @@ def get_likely_type(host: str) -> str:
     """
     if is_like_address(host):
         return "address"
-    host = normalize(host)
     if HOSTNAME_REGEX.match(host):
         return "hostname"
     raise ValueError(f"Host is not likely a IPv4/IPv6 address or hostname: {host}")
@@ -129,7 +111,6 @@ def is_valid_address(host: str) -> bool:
     This does not check whether the host exists, only if it appears to
     be in the right format for an address.
     """
-    host = normalize(host)
     try:
         ipaddress.ip_address(host)
     except ValueError:
@@ -148,8 +129,7 @@ def is_valid_hostname(host: str) -> bool:
     """
     if is_valid_address(host):
         return False
-    host = normalize(host)
-    if not HOSTNAME_REGEX.match(host):
+    if not HOSTNAME_REGEX.fullmatch(host):
         return False
     return True
 
@@ -164,8 +144,7 @@ def is_valid_host(host: str) -> bool:
     """
     if is_valid_address(host):
         return True
-    host = normalize(host)
-    if HOSTNAME_REGEX.match(host):
+    if HOSTNAME_REGEX.fullmatch(host):
         return True
     return False
 
@@ -180,13 +159,173 @@ def get_valid_type(host: str) -> str:
     """
     if is_valid_address(host):
         return "address"
-    host = normalize(host)
-    if HOSTNAME_REGEX.match(host):
+    if HOSTNAME_REGEX.fullmatch(host):
         return "hostname"
     raise ValueError(f"Host is not a valid IPv4/IPv6 address or hostname: {host}")
 
 
-def _get_itf_addrs():
+def normalize(host: Optional[str]) -> Optional[str]:
+    """Normalize the given host so it can be compared against others to avoid
+    duplicates.
+
+    Simple operation, but defined here to avoid replicating all over the place.
+    This works with likely types, so imperfect inputs are supported.
+    """
+    if not host:
+        return
+    htype = get_likely_type(host)
+    if htype == "hostname":
+        # the second strip removes the domain info which is sometimes
+        # included in the hostname but for a lan not relevant in most cases
+        return host.strip().split(".", 1)[0].casefold()
+    else:
+        return str(ipaddress.ip_address(host))
+
+
+def get_hostname(host: Optional[str] = None) -> str:
+    """Blocking. Return the hostname from either an address or a
+    hostname.
+
+    The result is normalized so hostnames can be compared.
+
+    This takes 1-5ms for the local machine since it is statically set.
+    The address may take longer to lookup.
+
+    Args:
+        host: Optional. address or hostname to lookup.
+            Defaults to returning local hostname.
+
+    Returns:
+        The hostname for the given host
+
+    Raises:
+        socket.gaierror if lookup failed
+    """
+    if host is None:
+        hostname = socket.gethostname()
+    else:
+        if get_likely_type(host) == "hostname":
+            hostname = host
+        else:
+            # strip off the dns suffix/domain info which should always be separated
+            # out from the hostname of the machine with dots
+            # this function supports both ipv4 and ipv6
+            hostname = socket.gethostbyaddr(host)[0]
+    return normalize(hostname)
+
+
+def get_netmask(version=4) -> str:
+    """Blocking. Get the network mask for the default gateway for the local machine.
+
+    Takes 30-40ms.
+    """
+    defgw = gateways()["default"][AF_INET if version == 4 else AF_INET6][1]
+    addrs = ifaddresses(defgw)
+    try:
+        netmask = addrs[AF_INET if version == 4 else AF_INET6][0]["netmask"]
+    except KeyError:
+        raise LookupError(
+            f"Failed to find a default v{version} netmask for the local machine."
+        )
+    return normalize(netmask)
+
+
+def _fast_is_local_address(address: str) -> bool:
+    try:
+        htype = get_likely_type(address)
+    except ValueError:
+        return False
+    if htype != "address":
+        return False
+    # when you bind to this, the app binds to all addresses for the localhost
+    # assumed that when the user gives this, they mean the local machine
+    if address in ("0.0.0.0", "::"):
+        return True
+    try:
+        ip_addr = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    else:
+        return ip_addr.is_loopback
+
+
+def _get_hosts_file_local_hostnames() -> set[str]:
+    """Return a set of loopback hostnames defined in the local
+    hosts file.
+
+    Takes ~1ms
+
+    WARNING: Cached after the first call for performance reasons.
+    """
+    hosts = Hosts()
+    host_entries: HostsEntry = hosts.entries
+    loopback_hostnames = set(["localhost"])  # built in whether present in file or not
+    for _ in host_entries:
+        if _.entry_type in ("blank", "comment"):
+            continue
+        if not _fast_is_local_address(_.address):
+            continue
+        loopback_hostnames |= set(_.names)
+    return loopback_hostnames
+
+
+def _fast_is_local_hostname(hostname: str) -> bool:
+    try:
+        htype = get_likely_type(hostname)
+    except ValueError:
+        return False
+    if htype != "hostname":
+        return False
+    hostname = normalize(hostname)
+    if hostname == "localhost":
+        return True
+    if hostname in _get_hosts_file_local_hostnames():
+        return True
+    # this requires io, but is still pretty fast, taking <5ms
+    if hostname == get_hostname():
+        return True
+    return False
+
+
+def get_address(host: Optional[str] = None, version=4) -> str:
+    """Blocking. Get the default address of the machine for the given ip version.
+
+    socket.gethostbyname(socket.gethostname()) is normally used but it
+    does not always work when other network adapters are installed on a
+    machine. This function uses the default gateway which should ensure
+    it returns an address which is reachable from other machines.
+
+    Takes 30-40ms. Python's socket lib takes about the same,
+    so there should not be a performance issue.
+
+    Args:
+        host: Optional. address or hostname to lookup the address
+            for. Defaults to returning the public address for the local machine.
+    """
+    htype = None if host is None else get_likely_type(host)
+    if htype == "address":
+        address = host
+    else:
+        family = AF_INET if version == 4 else AF_INET6
+        # HACK: if fast_is_local_hostname fails to pickup on a host value which is local
+        # this block may return the wrong address when mulitple network adapters are installed
+        # should be fine the ip address is given since we just return that as-is
+        if host is None or _fast_is_local_hostname(host):
+            defgw = gateways()["default"][family][1]
+            addrs = ifaddresses(defgw)
+            try:
+                address = addrs[family][0]["addr"]
+            except KeyError:
+                raise LookupError(
+                    f"Failed to find a default v{version} address "
+                    "for the local machine."
+                )
+        else:
+            address = socket.getaddrinfo(host, None, family)[0][4][0]
+    return normalize(address)
+
+
+def _get_interfaces_addresses() -> Generator[str, None, None]:
     """Generator of all ipv6 and ipv4 addresses for the local machine.
 
     This is blocking and may take a few hundred milliseconds to run
@@ -199,134 +338,65 @@ def _get_itf_addrs():
             if links is None:
                 continue
             for link in links:
-                yield link["addr"]
+                yield normalize(link["addr"])
 
 
-def _fast_is_localhost_address(address: str):
-    # when you bind to this, the app binds to all addresses for the localhost
-    # assumed that when the user gives this, they mean the local machine
-    if address in ("0.0.0.0", "::"):
-        return True
-    # lookup of primary address for local machine is very fast
-    if address == socket.gethostbyname(socket.gethostname()):
-        return True
-    try:
-        ip_addr = ipaddress.ip_address(address)
-    except ValueError:
-        return False
-    else:
-        return ip_addr.is_loopback
-
-
-@cache
-def _get_hosts_localhost_hostnames() -> Set[str]:
-    """Return a list of loopback hostnames defined in the local
-    hosts file.
-
-    WARNING: Cached after the first call for performance reasons.
-    """
-    hosts = Hosts()
-    host_entries: HostsEntry = hosts.entries
-    loopback_hostnames = set(["localhost"])  # built in whether present in file or not
-    for _ in host_entries:
-        if _.entry_type in ("blank", "comment"):
-            continue
-        if not _fast_is_localhost_address(_.address):
-            continue
-        loopback_hostnames |= set(_.names)
-    return loopback_hostnames
-
-
-def get_hostname(host: Optional[str] = None) -> str:
-    """Blocking lookup and return the hostname from either an address or a
-    hostname. Useful for when the input can be either.
-
-    The result is casefolded so hostnames can be compared.
-
-    Args:
-            host: Optional. address or hostname to lookup.
-                    Defaults to returning local hostname.
-
-    Returns:
-            The hostname for the given host
-
-    Raises:
-            socket.gaierror if lookup failed
-    """
-    host = normalize(host)
-    if host is None:
-        return socket.gethostname().casefold()
-    with tracer.start_as_current_span("resolve_host_to_hostname") as span:
-        span.set_attribute("host", host)
-        # strip off the dns suffix/domain info which should always be separated
-        # out from the hostname of the machine with dots
-        return socket.gethostbyaddr(host)[0].split(".", 1)[0].casefold()
-
-
-@tracer.start_as_current_span("is_localhost")
-def is_localhost(
-    host: str, hosts_file: bool = False, all_itfs: bool = False, dns: bool = False
-) -> bool:
-    """Return True if the given address or hostname is for the
+def is_localhost(host: str, all_itfs: bool = False, dns: bool = True) -> bool:
+    """Blocking. Return True if the given address or hostname is for the
     localhost; return False otherwise.
 
-    By default this sticks to fast locally available information, but
-    it can also perform DNS lookups and system calls to definitively determine
-    if the given host is for the local machine or not.
+    Always check info which is quickest to pull, such as known loopback
+    and local hostnames as well as the local hosts file. After that,
+    it checks with dns and finally it checks all interfaces available
+    on the local machine, which can take a few hundred ms.
+
+    Usually takes ~<50ms with default settings.
 
     Args:
-            host: the address or hostname to check
-            hosts_file: Optional. True if you want to check the local hosts
-                    file for hostnames mapping to addresses on the localhost.
-                    The hosts file is cached after it is read the first time imposing
-                    a small one-time cost. Defaults to False.
-            all_itfs: Optional. True if you want to check the addresses
-                    of all network interfaces of the local machine against
-                    the given address. This may take a few hundred milliseconds.
-                    Defaults to False.
-            dns: Optional. If True and a hostname is given, a final attempt
-                    will be made to resolve it to an address and then check if that
-                    address is for the local machine. This can take as long as typical
-                    timeout for DNS queries of 4 seconds. Defaults to False.
+        host: the address or hostname to check
+        all_itfs: Optional. True if you want to check the addresses
+            of all network interfaces of the local machine against
+            the given address. This may take a few hundred milliseconds.
+            Defaults to False.
+        dns: Optional. If True and a hostname is given, a final attempt
+            will be made to resolve it to an address and then check if that
+            address is for the local machine. This can take as long as typical
+            timeout for DNS queries of 4 seconds. Defaults to True.
 
     Returns:
-            True if host is for the localhost/loopback; False otherwise
+        True if host is for the localhost/loopback; False otherwise
     """
     host = normalize(host)
-    current_span = trace.get_current_span()
-    current_span.set_attribute("host", host)
     try:
         htype = get_likely_type(host)
     except ValueError:
         return False
     if htype == "address":
-        with tracer.start_as_current_span("check_address"):
-            if _fast_is_localhost_address(host):
+        if _fast_is_local_address(host):
+            return True
+        if dns:
+            # this takes 30-40ms. slightly faster than checking all interfaces
+            if host in frozenset(
+                map(normalize, socket.gethostbyname_ex(socket.gethostname())[2])
+            ):
                 return True
-            if all_itfs:
-                with tracer.start_as_current_span("check_all_interfaces_addresses"):
-                    # cannot cache these addresses because they can change at any time
-                    # as the machine switches between interfaces or reconnects
-                    for itf_addr in _get_itf_addrs():
-                        if itf_addr == host:
-                            return True
-            return False
+        if all_itfs:
+            # cannot cache these addresses because they can change at any time
+            # as the machine switches between interfaces or reconnects
+            for itf_addr in _get_interfaces_addresses():
+                if itf_addr == host:
+                    return True
+        return False
     else:
-        with tracer.start_as_current_span("check_hostname"):
-            if host == get_hostname():
-                return True
-            if hosts_file:
-                with tracer.start_as_current_span("check_hosts_file"):
-                    if host in _get_hosts_localhost_hostnames():
+        if _fast_is_local_hostname(host):
+            return True
+        if dns:
+            try:
+                addrinfos = socket.getaddrinfo(host, None)
+            except socket.gaierror:
+                return False
+            else:
+                for addrinfo in addrinfos:
+                    if is_localhost(addrinfo[4][0], all_itfs=all_itfs, dns=dns):
                         return True
-            if dns:
-                with tracer.start_as_current_span("resolve_host_to_address"):
-                    try:
-                        address = socket.gethostbyname(host)
-                    except socket.gaierror:
-                        return False
-                    else:
-                        return is_localhost(
-                            address, hosts_file=hosts_file, all_itfs=all_itfs, dns=dns
-                        )
-            return False
+        return False
