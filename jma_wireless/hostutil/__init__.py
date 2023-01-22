@@ -27,7 +27,7 @@ __all__ = [
 ]
 
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 # src: https://stackoverflow.com/questions/106179/regular-expression-to-fullmatch-dns-hostname-or-ip-address
 # updated to inclue underscore, which is allowed on windows
@@ -40,6 +40,9 @@ _IPV4_ADDRESS_LIKE_REGEX = re.compile("\d*\.\d*\.\d*\.\d*")
 # hostnames cannot contain ":" (src: https://en.wikipedia.org/wiki/Hostname#Restrictions_on_valid_host_names)
 # and ipv4 does not use this char either, so if included it likely means the user was trying to provide ipv6
 _IPV6_ADDRESS_LIKE_REGEX = re.compile(".*:.*")
+# cache of the hostname for the local machine for performance reasons
+# saved the first time it is requested
+_cached_local_hostname: str = None
 
 
 def is_like_ipv4_address(host: str) -> bool:
@@ -202,7 +205,10 @@ def get_hostname(host: Optional[str] = None) -> str:
         socket.gaierror if lookup failed
     """
     if host is None:
-        hostname = socket.gethostname()
+        global _cached_local_hostname
+        if _cached_local_hostname is None:
+            _cached_local_hostname = socket.gethostname()
+        hostname = _cached_local_hostname
     else:
         if get_likely_type(host) == "hostname":
             hostname = host
@@ -377,7 +383,7 @@ def is_localhost(host: str, all_itfs: bool = False, dns: bool = True) -> bool:
         if dns:
             # this takes 30-40ms. slightly faster than checking all interfaces
             if host in frozenset(
-                map(normalize, socket.gethostbyname_ex(socket.gethostname())[2])
+                map(normalize, socket.gethostbyname_ex(get_hostname())[2])
             ):
                 return True
         if all_itfs:
