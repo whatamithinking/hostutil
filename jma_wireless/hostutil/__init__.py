@@ -1,10 +1,10 @@
 from ipaddress import ip_address, ip_network
-from typing import Generator, Optional, NamedTuple
+from typing import Optional, NamedTuple
 import socket
 import re
 
 import psutil
-from netifaces import interfaces, ifaddresses, AF_INET, AF_INET6, gateways
+from netifaces import AF_INET, AF_INET6, gateways
 from python_hosts import Hosts, HostsEntry
 
 __all__ = [
@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 
-__version__ = "4.0.0"
+__version__ = "4.0.1"
 
 # src: https://stackoverflow.com/questions/106179/regular-expression-to-fullmatch-dns-hostname-or-ip-address
 # updated to inclue underscore, which is allowed on windows
@@ -198,22 +198,24 @@ def get_mac_addresses() -> dict[str, str]:
         addr[0]
         for ift, addrs in gateways().items()
         for addr in addrs
-        if ift in (socket.AF_INET, socket.AF_INET6)
+        if ift in (AF_INET, AF_INET6)
     )
     macs = {}
     for name, addrs in psutil.net_if_addrs().items():
+        gfound = False
         for addr in addrs:
             if not addr.family in (socket.AF_INET, socket.AF_INET6):
                 continue
-            ipaddr = ip_address(addr.address)
-            if ipaddr.is_loopback:
-                continue
-            # netmask seems to be none for ipv6. not sure why but dont have a good
-            # way to test an ipv6 machine at the moment so ignoring
             if addr.netmask is None:
                 continue
-            gwaddr = str(ip_network(f"{ipaddr}/{addr.netmask}", strict=False)[1])
+            gwaddr = str(ip_network(f"{addr.address}/{addr.netmask}", strict=False)[1])
             if not gwaddr in gaddrs:
+                continue
+            gfound = True
+        if not gfound:
+            continue
+        for addr in addrs:
+            if addr.family != psutil.AF_LINK:
                 continue
             macs[str(name.casefold().strip())] = normalize_mac_address(addr.address)
     return macs
@@ -361,7 +363,7 @@ def get_addresses() -> list[IpAddrInfo]:
         addr[0]
         for ift, addrs in gateways().items()  # ~5ms
         for addr in addrs
-        if ift in (socket.AF_INET, socket.AF_INET6)
+        if ift in (AF_INET, AF_INET6)
     )
     addrinfos = []
     stats = psutil.net_if_stats()  # ~35ms
