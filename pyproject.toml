@@ -14,7 +14,7 @@ classifiers = [
   "Operating System :: OS Independent",
   "Topic :: System :: Networking",
 ]
-dependencies = ["netifaces", "python_hosts"]
+dependencies = ["netifaces", "python_hosts", "psutil"]
 description = "hostname/address parsers/validators/utils for handling user inputs which could be either."
 dynamic = ["version", "readme"]
 keywords = ["hostname", "host", "address", "ip", "networking", "ipv4", "ipv6"]

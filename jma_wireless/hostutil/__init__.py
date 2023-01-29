@@ -1,9 +1,9 @@
-import ipaddress
-
-from typing import Generator, Optional
+from ipaddress import ip_address, ip_network
+from typing import Generator, Optional, NamedTuple
 import socket
 import re
 
+import psutil
 from netifaces import interfaces, ifaddresses, AF_INET, AF_INET6, gateways
 from python_hosts import Hosts, HostsEntry
 
@@ -20,14 +20,16 @@ __all__ = [
     "is_valid_hostname",
     "is_valid_host",
     "get_valid_type",
+    "normalize_mac_address",
+    "get_mac_addresses",
     "get_hostname",
-    "get_netmask",
+    "get_addresses",
     "get_address",
     "is_localhost",
 ]
 
 
-__version__ = "3.0.0"
+__version__ = "4.0.0"
 
 # src: https://stackoverflow.com/questions/106179/regular-expression-to-fullmatch-dns-hostname-or-ip-address
 # updated to inclue underscore, which is allowed on windows
@@ -43,6 +45,7 @@ _IPV6_ADDRESS_LIKE_REGEX = re.compile(".*:.*")
 # cache of the hostname for the local machine for performance reasons
 # saved the first time it is requested
 _cached_local_hostname: str = None
+_MAC_REPLACE_REGEX = re.compile("[^0123456789ABCDEF]")
 
 
 def is_like_ipv4_address(host: str) -> bool:
@@ -115,7 +118,7 @@ def is_valid_address(host: str) -> bool:
     be in the right format for an address.
     """
     try:
-        ipaddress.ip_address(host)
+        ip_address(host)
     except ValueError:
         return False
     else:
@@ -167,9 +170,58 @@ def get_valid_type(host: str) -> str:
     raise ValueError(f"Host is not a valid IPv4/IPv6 address or hostname: {host}")
 
 
+def normalize_mac_address(mac: str, sep: str = ":") -> str:
+    """Normalize the given mac address using the the given separator.
+
+    Args:
+        mac: The mac address to normalize
+        sep: Optional. The separator to use between the blocks of the address.
+            Defaults to ":".
+    """
+    pure = re.sub(_MAC_REPLACE_REGEX, "", mac.upper())
+    if len(pure) != 12:
+        raise ValueError("Invalid MAC address length. Cannot normalize.")
+    return sep.join([pure[i : i + 2] for i in range(0, len(pure), 2)])
+
+
+def get_mac_addresses() -> dict[str, str]:
+    """Get a mapping of physical network interface names to their mac addresses.
+
+    The virtual adapters are filtered out based on the gateways for the machine.
+    All mac addresses are normalized and interface names casefolded for consistency.
+    Some of the mac addresses may be for network interfaces which are not currently
+    active. For example, if using wifi the ethernet interface is no longer active.
+
+    Takes ~30-45ms
+    """
+    gaddrs = frozenset(
+        addr[0]
+        for ift, addrs in gateways().items()
+        for addr in addrs
+        if ift in (socket.AF_INET, socket.AF_INET6)
+    )
+    macs = {}
+    for name, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if not addr.family in (socket.AF_INET, socket.AF_INET6):
+                continue
+            ipaddr = ip_address(addr.address)
+            if ipaddr.is_loopback:
+                continue
+            # netmask seems to be none for ipv6. not sure why but dont have a good
+            # way to test an ipv6 machine at the moment so ignoring
+            if addr.netmask is None:
+                continue
+            gwaddr = str(ip_network(f"{ipaddr}/{addr.netmask}", strict=False)[1])
+            if not gwaddr in gaddrs:
+                continue
+            macs[str(name.casefold().strip())] = normalize_mac_address(addr.address)
+    return macs
+
+
 def normalize(host: Optional[str]) -> Optional[str]:
-    """Normalize the given host so it can be compared against others to avoid
-    duplicates.
+    """Normalize the given host (hostname or address) so it can be compared
+    against others to avoid duplicates.
 
     Simple operation, but defined here to avoid replicating all over the place.
     This works with likely types, so imperfect inputs are supported.
@@ -182,7 +234,7 @@ def normalize(host: Optional[str]) -> Optional[str]:
         # included in the hostname but for a lan not relevant in most cases
         return host.strip().split(".", 1)[0].casefold()
     else:
-        return str(ipaddress.ip_address(host))
+        return str(ip_address(host))
 
 
 def get_hostname(host: Optional[str] = None) -> str:
@@ -220,22 +272,6 @@ def get_hostname(host: Optional[str] = None) -> str:
     return normalize(hostname)
 
 
-def get_netmask(version=4) -> str:
-    """Blocking. Get the network mask for the default gateway for the local machine.
-
-    Takes 30-40ms.
-    """
-    defgw = gateways()["default"][AF_INET if version == 4 else AF_INET6][1]
-    addrs = ifaddresses(defgw)
-    try:
-        netmask = addrs[AF_INET if version == 4 else AF_INET6][0]["netmask"]
-    except KeyError:
-        raise LookupError(
-            f"Failed to find a default v{version} netmask for the local machine."
-        )
-    return normalize(netmask)
-
-
 def _fast_is_local_address(address: str) -> bool:
     try:
         htype = get_likely_type(address)
@@ -248,7 +284,7 @@ def _fast_is_local_address(address: str) -> bool:
     if address in ("0.0.0.0", "::"):
         return True
     try:
-        ip_addr = ipaddress.ip_address(address)
+        ip_addr = ip_address(address)
     except ValueError:
         return False
     else:
@@ -293,61 +329,116 @@ def _fast_is_local_hostname(hostname: str) -> bool:
     return False
 
 
-def get_address(host: Optional[str] = None, version=4) -> str:
-    """Blocking. Get the default address of the machine for the given ip version.
+class IpAddrInfo(NamedTuple):
+    address: str
+    family: socket.AddressFamily
+    netmask: str
+    gateway: str
+    broadcast: str
+    connection_name: str
+    is_in_use: bool
+
+
+def get_addresses() -> list[IpAddrInfo]:
+    """Return a list of IpAddrInfo objects for all addresses this machine
+    is accessible from by external machines on the network.
 
     socket.gethostbyname(socket.gethostname()) is normally used but it
     does not always work when other network adapters are installed on a
-    machine. This function uses the default gateway which should ensure
-    it returns an address which is reachable from other machines.
+    machine. For example, when WSL is installed on windows the socket lib
+    can sometimes return the address of the WSL adapter which is not accessible
+    from external machines.
+    This function filters out non-active network adapters, so if you are switching
+    from wifi to ethernet, the addresses returned will be different before and after.
 
-    Takes 30-40ms. Python's socket lib takes about the same,
-    so there should not be a performance issue.
+    Takes ~60-80ms.
+
+    Note this is on the network and not on the internet.
+    """
+    # HACK: use the physical gateways we know about to filter out virtual adapters
+    # which should not have the right ip addr/netmask to use the physical gateways
+    gaddrs = frozenset(
+        addr[0]
+        for ift, addrs in gateways().items()  # ~5ms
+        for addr in addrs
+        if ift in (socket.AF_INET, socket.AF_INET6)
+    )
+    addrinfos = []
+    stats = psutil.net_if_stats()  # ~35ms
+    for name, addrs in psutil.net_if_addrs().items():  # ~25ms
+        for addr in addrs:
+            if not addr.family in (socket.AF_INET, socket.AF_INET6):
+                continue
+            ipaddr = ip_address(addr.address)
+            if ipaddr.is_loopback:
+                continue
+            # netmask seems to be none for ipv6. not sure why but dont have a good
+            # way to test an ipv6 machine at the moment so ignoring
+            if addr.netmask is None:
+                continue
+            # workout what gateway address would be for this adapter based on
+            # addr and netmask and check against known gateway addresses
+            # could have also checked if the adapter guid is the same as from the netifaces
+            # gateways list but would need a mapping between the guids and names
+            # which would require accessing the registry
+            ipnet = ip_network(f"{ipaddr}/{addr.netmask}", strict=False)
+            gwaddr = str(next(ipnet.hosts()))
+            if not gwaddr in gaddrs:
+                continue
+            addrinfos.append(
+                IpAddrInfo(
+                    address=normalize(addr.address),
+                    gateway=normalize(gwaddr),
+                    netmask=normalize(addr.netmask),
+                    family=addr.family,
+                    broadcast=normalize(addr.broadcast or str(ipnet.broadcast_address)),
+                    connection_name=name.casefold().strip(),
+                    is_in_use=stats[name].isup,
+                )
+            )
+    addrinfos.sort(key=lambda _: _.connection_name)
+    return addrinfos
+
+
+def get_address(host: Optional[str] = None) -> str:
+    """Blocking. Get the default address of the machine.
+
+    Takes ~60-80ms
 
     Args:
         host: Optional. address or hostname to lookup the address
             for. Defaults to returning the public address for the local machine.
+
+    Raises:
+        ConnectionError if computer has no network adapter in use and address
+            cannot be determined.
     """
     htype = None if host is None else get_likely_type(host)
+    address = None
     if htype == "address":
         address = host
     else:
-        family = AF_INET if version == 4 else AF_INET6
         # HACK: if fast_is_local_hostname fails to pickup on a host value which is local
         # this block may return the wrong address when mulitple network adapters are installed
         # should be fine the ip address is given since we just return that as-is
         if host is None or _fast_is_local_hostname(host):
-            defgw = gateways()["default"][family][1]
-            addrs = ifaddresses(defgw)
+            addrs = get_addresses()
+            if not addrs:
+                raise ConnectionError("No network adapters found for this machine.")
             try:
-                address = addrs[family][0]["addr"]
-            except KeyError:
-                raise LookupError(
-                    f"Failed to find a default v{version} address "
-                    "for the local machine."
-                )
+                # return first address found which is in active use
+                # or else fallback to just whatever the first one is in the event
+                # no adapters are currently in use for some reason, such as network
+                # disconnect or switching from one to the other
+                address = next(_ for _ in addrs if _.is_in_use).address
+            except StopIteration:
+                address = addrs[0].address
         else:
-            address = socket.getaddrinfo(host, None, family)[0][4][0]
+            address = socket.getaddrinfo(host, None)[0][4][0]
     return normalize(address)
 
 
-def _get_interfaces_addresses() -> Generator[str, None, None]:
-    """Generator of all ipv6 and ipv4 addresses for the local machine.
-
-    This is blocking and may take a few hundred milliseconds to run
-    to completion.
-    """
-    for interface in interfaces():
-        addrs = ifaddresses(interface)
-        for itf_type in (AF_INET, AF_INET6):
-            links = addrs.get(itf_type)
-            if links is None:
-                continue
-            for link in links:
-                yield normalize(link["addr"])
-
-
-def is_localhost(host: str, all_itfs: bool = False, dns: bool = True) -> bool:
+def is_localhost(host: str, dns: bool = True) -> bool:
     """Blocking. Return True if the given address or hostname is for the
     localhost; return False otherwise.
 
@@ -360,10 +451,6 @@ def is_localhost(host: str, all_itfs: bool = False, dns: bool = True) -> bool:
 
     Args:
         host: the address or hostname to check
-        all_itfs: Optional. True if you want to check the addresses
-            of all network interfaces of the local machine against
-            the given address. This may take a few hundred milliseconds.
-            Defaults to False.
         dns: Optional. If True and a hostname is given, a final attempt
             will be made to resolve it to an address and then check if that
             address is for the local machine. This can take as long as typical
@@ -386,12 +473,6 @@ def is_localhost(host: str, all_itfs: bool = False, dns: bool = True) -> bool:
                 map(normalize, socket.gethostbyname_ex(get_hostname())[2])
             ):
                 return True
-        if all_itfs:
-            # cannot cache these addresses because they can change at any time
-            # as the machine switches between interfaces or reconnects
-            for itf_addr in _get_interfaces_addresses():
-                if itf_addr == host:
-                    return True
         return False
     else:
         if _fast_is_local_hostname(host):
@@ -403,6 +484,6 @@ def is_localhost(host: str, all_itfs: bool = False, dns: bool = True) -> bool:
                 return False
             else:
                 for addrinfo in addrinfos:
-                    if is_localhost(addrinfo[4][0], all_itfs=all_itfs, dns=dns):
+                    if is_localhost(addrinfo[4][0], dns=dns):
                         return True
         return False
