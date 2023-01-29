@@ -21,7 +21,6 @@ __all__ = [
     "is_valid_host",
     "get_valid_type",
     "normalize_mac_address",
-    "get_mac_addresses",
     "get_hostname",
     "get_addresses",
     "get_address",
@@ -29,7 +28,7 @@ __all__ = [
 ]
 
 
-__version__ = "4.0.1"
+__version__ = "5.0.0"
 
 # src: https://stackoverflow.com/questions/106179/regular-expression-to-fullmatch-dns-hostname-or-ip-address
 # updated to inclue underscore, which is allowed on windows
@@ -170,57 +169,6 @@ def get_valid_type(host: str) -> str:
     raise ValueError(f"Host is not a valid IPv4/IPv6 address or hostname: {host}")
 
 
-def normalize_mac_address(mac: str, sep: str = ":") -> str:
-    """Normalize the given mac address using the the given separator.
-
-    Args:
-        mac: The mac address to normalize
-        sep: Optional. The separator to use between the blocks of the address.
-            Defaults to ":".
-    """
-    pure = re.sub(_MAC_REPLACE_REGEX, "", mac.upper())
-    if len(pure) != 12:
-        raise ValueError("Invalid MAC address length. Cannot normalize.")
-    return sep.join([pure[i : i + 2] for i in range(0, len(pure), 2)])
-
-
-def get_mac_addresses() -> dict[str, str]:
-    """Get a mapping of physical network interface names to their mac addresses.
-
-    The virtual adapters are filtered out based on the gateways for the machine.
-    All mac addresses are normalized and interface names casefolded for consistency.
-    Some of the mac addresses may be for network interfaces which are not currently
-    active. For example, if using wifi the ethernet interface is no longer active.
-
-    Takes ~30-45ms
-    """
-    gaddrs = frozenset(
-        addr[0]
-        for ift, addrs in gateways().items()
-        for addr in addrs
-        if ift in (AF_INET, AF_INET6)
-    )
-    macs = {}
-    for name, addrs in psutil.net_if_addrs().items():
-        gfound = False
-        for addr in addrs:
-            if not addr.family in (socket.AF_INET, socket.AF_INET6):
-                continue
-            if addr.netmask is None:
-                continue
-            gwaddr = str(ip_network(f"{addr.address}/{addr.netmask}", strict=False)[1])
-            if not gwaddr in gaddrs:
-                continue
-            gfound = True
-        if not gfound:
-            continue
-        for addr in addrs:
-            if addr.family != psutil.AF_LINK:
-                continue
-            macs[str(name.casefold().strip())] = normalize_mac_address(addr.address)
-    return macs
-
-
 def normalize(host: Optional[str]) -> Optional[str]:
     """Normalize the given host (hostname or address) so it can be compared
     against others to avoid duplicates.
@@ -283,7 +231,7 @@ def _fast_is_local_address(address: str) -> bool:
         return False
     # when you bind to this, the app binds to all addresses for the localhost
     # assumed that when the user gives this, they mean the local machine
-    if address in ("0.0.0.0", "::"):
+    if address in ("0.0.0.0", "::1"):
         return True
     try:
         ip_addr = ip_address(address)
@@ -331,19 +279,33 @@ def _fast_is_local_hostname(hostname: str) -> bool:
     return False
 
 
-class IpAddrInfo(NamedTuple):
-    address: str
+def normalize_mac_address(mac: str, sep: str = ":") -> str:
+    """Normalize the given mac address using the the given separator.
+
+    Args:
+        mac: The mac address to normalize
+        sep: Optional. The separator to use between the blocks of the address.
+            Defaults to ":".
+    """
+    pure = re.sub(_MAC_REPLACE_REGEX, "", mac.upper())
+    if len(pure) != 12:
+        raise ValueError("Invalid MAC address length. Cannot normalize.")
+    return sep.join([pure[i : i + 2] for i in range(0, len(pure), 2)])
+
+
+class AddressInfo(NamedTuple):
+    connection_name: str
     family: socket.AddressFamily
+    address: str
     netmask: str
     gateway: str
     broadcast: str
-    connection_name: str
-    is_in_use: bool
+    mac_address: str
 
 
-def get_addresses() -> list[IpAddrInfo]:
-    """Return a list of IpAddrInfo objects for all addresses this machine
-    is accessible from by external machines on the network.
+def get_addresses() -> list[AddressInfo]:
+    """Return a connection name sorted list of AddressInfo objects for
+    all physical connections for this machine.
 
     socket.gethostbyname(socket.gethostname()) is normally used but it
     does not always work when other network adapters are installed on a
@@ -353,7 +315,11 @@ def get_addresses() -> list[IpAddrInfo]:
     This function filters out non-active network adapters, so if you are switching
     from wifi to ethernet, the addresses returned will be different before and after.
 
-    Takes ~60-80ms.
+    WARNING: In some cases on windows it seems the address of an adapter such as wifi
+    may change when not in use to some internal address for the machine in which case
+    it will be filtered out instead of returned with an invalid address.
+
+    Takes ~30-60ms.
 
     Note this is on the network and not on the internet.
     """
@@ -366,38 +332,49 @@ def get_addresses() -> list[IpAddrInfo]:
         if ift in (AF_INET, AF_INET6)
     )
     addrinfos = []
-    stats = psutil.net_if_stats()  # ~35ms
     for name, addrs in psutil.net_if_addrs().items():  # ~25ms
+        # print(name)
+        # skip connection if not for one of the known gateways to filter out virtual stuff
+        gfound = False
         for addr in addrs:
             if not addr.family in (socket.AF_INET, socket.AF_INET6):
                 continue
-            ipaddr = ip_address(addr.address)
-            if ipaddr.is_loopback:
-                continue
-            # netmask seems to be none for ipv6. not sure why but dont have a good
-            # way to test an ipv6 machine at the moment so ignoring
             if addr.netmask is None:
                 continue
-            # workout what gateway address would be for this adapter based on
-            # addr and netmask and check against known gateway addresses
-            # could have also checked if the adapter guid is the same as from the netifaces
-            # gateways list but would need a mapping between the guids and names
-            # which would require accessing the registry
-            ipnet = ip_network(f"{ipaddr}/{addr.netmask}", strict=False)
-            gwaddr = str(next(ipnet.hosts()))
+            gwaddr = str(ip_network(f"{addr.address}/{addr.netmask}", strict=False)[1])
             if not gwaddr in gaddrs:
                 continue
+            gfound = True
+        if not gfound:
+            continue
+
+        try:
+            mac_address = next(
+                addr.address for addr in addrs if addr.family == psutil.AF_LINK
+            )
+        except StopIteration:
+            raise RuntimeError(f"No mac address found for connection, {name}")
+
+        for addr in addrs:
+            if not addr.family in (socket.AF_INET, socket.AF_INET6):
+                continue
+            if ip_address(addr.address).is_loopback:
+                continue
+            if addr.netmask is None:
+                continue
+            ipnet = ip_network(f"{addr.address}/{addr.netmask}", strict=False)
             addrinfos.append(
-                IpAddrInfo(
+                AddressInfo(
+                    connection_name=name.casefold().strip(),
+                    family=addr.family,
                     address=normalize(addr.address),
                     gateway=normalize(gwaddr),
                     netmask=normalize(addr.netmask),
-                    family=addr.family,
                     broadcast=normalize(addr.broadcast or str(ipnet.broadcast_address)),
-                    connection_name=name.casefold().strip(),
-                    is_in_use=stats[name].isup,
+                    mac_address=normalize_mac_address(mac_address),
                 )
             )
+
     addrinfos.sort(key=lambda _: _.connection_name)
     return addrinfos
 
@@ -432,7 +409,12 @@ def get_address(host: Optional[str] = None) -> str:
                 # or else fallback to just whatever the first one is in the event
                 # no adapters are currently in use for some reason, such as network
                 # disconnect or switching from one to the other
-                address = next(_ for _ in addrs if _.is_in_use).address
+                stats = dict(
+                    (k.casefold().strip(), v) for k, v in psutil.net_if_stats().items()
+                )
+                address = next(
+                    _ for _ in addrs if stats[_.connection_name].isup
+                ).address
             except StopIteration:
                 address = addrs[0].address
         else:
