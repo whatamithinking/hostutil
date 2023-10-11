@@ -28,23 +28,23 @@ __all__ = [
 ]
 
 
-__version__ = "5.0.0"
+__version__ = "5.0.1"
 
 # src: https://stackoverflow.com/questions/106179/regular-expression-to-fullmatch-dns-hostname-or-ip-address
 # updated to inclue underscore, which is allowed on windows
 HOSTNAME_REGEX = re.compile(
-    "(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9_\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9_\-]*[A-Za-z0-9])"
+    r"(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9_\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9_\-]*[A-Za-z0-9])"
 )
 # this does not guarantee a valid ipv4 address. it just indicates that the user probably entered an address
 # but perhaps messed up the formatting
-_IPV4_ADDRESS_LIKE_REGEX = re.compile("\d*\.\d*\.\d*\.\d*")
+_IPV4_ADDRESS_LIKE_REGEX = re.compile(r"\d*\.\d*\.\d*\.\d*")
 # hostnames cannot contain ":" (src: https://en.wikipedia.org/wiki/Hostname#Restrictions_on_valid_host_names)
 # and ipv4 does not use this char either, so if included it likely means the user was trying to provide ipv6
-_IPV6_ADDRESS_LIKE_REGEX = re.compile(".*:.*")
+_IPV6_ADDRESS_LIKE_REGEX = re.compile(r".*:.*")
 # cache of the hostname for the local machine for performance reasons
 # saved the first time it is requested
 _cached_local_hostname: str = None
-_MAC_REPLACE_REGEX = re.compile("[^0123456789ABCDEF]")
+_MAC_REPLACE_REGEX = re.compile(r"[^0123456789ABCDEF]")
 
 
 def is_like_ipv4_address(host: str) -> bool:
