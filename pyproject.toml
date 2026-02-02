@@ -5,6 +5,9 @@ requires = ["hatchling"]
 [tool.hatch.version]
 path = "whatamithinking/hostutil/__init__.py"
 
+[tool.hatch.build.targets.wheel]
+packages = ["whatamithinking"]
+
 [project]
 authors = [
   {author = "Connor Sherwood Maynes", email = "connormaynes@gmail.com"},

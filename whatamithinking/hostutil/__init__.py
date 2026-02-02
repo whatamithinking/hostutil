@@ -28,7 +28,7 @@ __all__ = [
 ]
 
 
-__version__ = "5.0.1"
+__version__ = "5.0.2"
 
 # src: https://stackoverflow.com/questions/106179/regular-expression-to-fullmatch-dns-hostname-or-ip-address
 # updated to inclue underscore, which is allowed on windows
