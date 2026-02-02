@@ -3,7 +3,7 @@ build-backend = "hatchling.build"
 requires = ["hatchling"]
 
 [tool.hatch.version]
-path = "jma_wireless/hostutil/__init__.py"
+path = "whatamithinking/hostutil/__init__.py"
 
 [project]
 authors = [
@@ -19,11 +19,11 @@ description = "hostname/address parsers/validators/utils for handling user input
 dynamic = ["version", "readme"]
 keywords = ["hostname", "host", "address", "ip", "networking", "ipv4", "ipv6"]
 maintainers = []
-name = "jma-wireless-hostutil"
+name = "whatamithinking-hostutil"
 
 [tool.setuptools.dynamic]
 readme = {file = "README.md"}
-version = {attr = "jma_wireless.hostutil.__version__"}
+version = {attr = "whatamithinking.hostutil.__version__"}
 
 [project.optional-dependencies]
 dev = ["black"]
